@@ -1,9 +1,20 @@
 // pages/index.tsx
 import { signIn, signOut, useSession } from "next-auth/react";
 import type { NextPage } from "next";
+// import axios from "axios"
 
 const Home: NextPage = () => {
-  const { data: session } = useSession();
+  const { data: session } = useSession(); 
+
+  // const checkAccessToken = async () => {
+  //   // write axios post request to /api/test-token
+  //   let res = await axios.post('/api/test-token', {}, {
+  //     // headers: {
+  //     //   'Authorization': `Bearer ${session?.accessToken}`
+  //     // }
+  //   })
+  //   console.log('res', res)
+  // };
   console.log('@@@@@@@@@@@@@@@@@', session)
 
   return (
@@ -35,6 +46,7 @@ const Home: NextPage = () => {
               to include a phone number if available. */}
           {/* {session.user?.phoneNumber && <p>Phone: {session.user.phoneNumber}</p>} */}
           <button onClick={() => signOut()}>Sign out</button>
+          {/* <button onClick={() => checkAccessToken()}>Check for access token</button> */}
         </>
       )}
     </div>
