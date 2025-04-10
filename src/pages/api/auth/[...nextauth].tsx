@@ -1,5 +1,15 @@
-import NextAuth, { NextAuthOptions } from "next-auth";
+// pages/api/auth/[...nextauth].tsx
+
+import NextAuth, { NextAuthOptions, DefaultSession } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+
+declare module "next-auth" {
+  interface Session {
+    user: {
+      accessToken?: string;
+    } & DefaultSession["user"];
+  }
+}
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -8,9 +18,8 @@ export const authOptions: NextAuthOptions = {
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
       authorization: {
         params: {
-          // Include the phone number scope along with standard scopes
-          scope:
-            "openid email profile https://www.googleapis.com/auth/user.phonenumbers.read",
+          // Include the phone number scope along with standard scopes.
+          scope: "openid email profile https://www.googleapis.com/auth/user.phonenumbers.read",
         },
       },
     }),
@@ -18,12 +27,12 @@ export const authOptions: NextAuthOptions = {
   secret: process.env.NEXT_PUBLIC_SECRET,
   callbacks: {
     async jwt({ token, account }) {
-      // When the user signs in for the first time, account is available.
+      // When the user signs in, account is available.
       if (account && account.access_token) {
-        // Save the access token in the token for later use.
+        // Save the access token in the JWT token.
         token.accessToken = account.access_token;
 
-        // Fetch phone numbers from Google People API using the access token.
+        // Optionally, fetch phone numbers from Google People API using the access token.
         try {
           const res = await fetch(
             "https://people.googleapis.com/v1/people/me?personFields=phoneNumbers",
@@ -37,12 +46,11 @@ export const authOptions: NextAuthOptions = {
           const data = await res.json();
           console.log("Google People API raw data:", data);
 
-          // If phoneNumbers array is returned, pick the first one.
-          if (data.phoneNumbers && data.phoneNumbers.length > 0) {
-            token.phoneNumber = data.phoneNumbers[0].value;
-          } else {
-            token.phoneNumber = null;
-          }
+          // If phoneNumbers are returned, save the first one.
+          token.phoneNumber =
+            data.phoneNumbers && data.phoneNumbers.length > 0
+              ? data.phoneNumbers[0].value
+              : null;
         } catch (error) {
           console.error("Error fetching phone number:", error);
           token.phoneNumber = null;
@@ -50,13 +58,11 @@ export const authOptions: NextAuthOptions = {
       }
       return token;
     },
-    async session({
-        session,
-        // token,
-    }) {
-      // Make the phone number available on the session object.
+    async session({ session, token }) {
+      // Attach values from the JWT token to the session object.
       if (session.user) {
-        // session.user.phoneNumber = token.phoneNumber as string | null;
+        session.user.accessToken = token.accessToken as string;
+        // session.user.phoneNumber = token.phoneNumber;
       }
       return session;
     },
