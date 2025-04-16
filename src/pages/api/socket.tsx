@@ -1,125 +1,178 @@
+// pages/api/socket/index.ts
 import { NextApiRequest, NextApiResponse } from "next";
 import { Server as NetServer } from "http";
 import { Server as IOServer, Socket } from "socket.io";
-import { getToken } from "next-auth/jwt";
-import { OAuth2Client } from "google-auth-library";
-import { SpeechClient } from "@google-cloud/speech";
+import { GoogleGenAI, GenerateContentResponse, Modality, LiveServerMessage, Session } from "@google/genai";
+// import dotenv from "dotenv";
 
-// Extend NextApiResponse so that its socket property includes a server.
-type NextApiResponseWithSocket = NextApiResponse & {
-  socket: {
-    server: NetServer & { io?: IOServer }
-  }
-};
+// dotenv.config();
 
-// We derive the type for the speech stream from the SpeechClient's streamingRecognize method.
-type SpeechStreamType = ReturnType<SpeechClient["streamingRecognize"]>;
-
-// Extend Socket with an optional speechStream property.
+// Extend Socket to add our live session property.
 interface CustomSocket extends Socket {
-  speechStream?: SpeechStreamType;
+  liveSession?: {
+    // We assume the liveSession object returned from the SDK is both
+    // an async iterable of response chunks and a writable stream.
+    write: (input: { audio: { inlineData: { data: string; mimeType: string } } }) => void;
+    end: () => void;
+  } & AsyncIterable<GenerateContentResponse>;
 }
 
+// Extend NextApiResponse so that its socket property includes a server.
+interface NextApiResponseWithSocket extends NextApiResponse {
+  socket: {
+    server: NetServer & { io?: IOServer };
+  };
+}
+
+// Disable body parsing so that the raw upgrade request comes through.
 export const config = {
   api: {
-    bodyParser: false, // Disable body parsing for raw upgrade requests.
+    bodyParser: false,
   },
 };
 
-export default function handler(
+export default async function handler(
   req: NextApiRequest,
   res: NextApiResponseWithSocket
 ) {
-  // Ensure the socket exists.
-  if (!res.socket) {
-    console.error("Socket is null");
-    res.end();
-    return;
-  }
-
-  // If Socket.IO hasn't been initialized, do so.
   if (!res.socket.server.io) {
     console.log("Initializing new Socket.IO server...");
-
     const io = new IOServer(res.socket.server, {
       path: "/api/socket/socket.io",
     });
-
-    io.on("connection", (socket: CustomSocket) => {
+    let liveSession: Session | undefined;
+    io.on("connection", async (socket: CustomSocket) => {
       console.log("Client connected:", socket.id);
 
-      (async () => {
-        try {
-          // Create a fake request with the handshake cookies so getToken can extract the token.
-          const fakeReq = { headers: { cookie: socket.handshake.headers.cookie || "" } } as NextApiRequest;
-          const token = await getToken({ req: fakeReq, secret: process.env.NEXT_PUBLIC_SECRET });
-          if (!token || !token.accessToken) {
-            console.error("No valid access token found; disconnecting socket");
-            socket.disconnect();
-            return;
-          }
+      try {
+        // Initialize the Google Gen AI client in Vertex AI mode.
+        // (Make sure these environment variables are set: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION)
+        const genaiClient = new GoogleGenAI({
+          // vertexai: true,
+          // project: process.env.GOOGLE_CLOUD_PROJECT,
+          // location: process.env.GOOGLE_CLOUD_LOCATION || "us-central1",
+          apiKey: process.env.GEMINI_API_KEY,
+          httpOptions: {
+            apiVersion: 'v1alpha',
+          },
+        });
 
-          // Set up an OAuth2Client using your Google client credentials.
-          const oauth2Client = new OAuth2Client(
-            process.env.GOOGLE_CLIENT_ID,
-            process.env.GOOGLE_CLIENT_SECRET
-          );
-          // Cast the accessToken to string.
-          oauth2Client.setCredentials({ access_token: token.accessToken as string });
-
-          // Workaround: cast oauth2Client to the type expected by SpeechClient.
-          // @ts-expect-error Type 'unknown' is not assignable to type 'GoogleAuth<AuthClient> | undefined'.
-          const speechClient = new SpeechClient({ auth: oauth2Client as unknown });
-
-          // Configure the Speech-to-Text streaming request.
-          const request = {
-            config: {
-              encoding: "WEBM_OPUS", // Must match the client recording (e.g. audio/webm; codecs=opus)
-              sampleRateHertz: 24000, // Must match the AudioContext sample rate
-              languageCode: "en-US",
+        // Start a live transcription session using the Gemini model.
+        // Here we use the model "gemini-2.0-flash-exp"; adjust generation_config as needed.
+        liveSession = await genaiClient.live.connect({
+          model: 'gemini-2.0-flash-live-001',
+          config: {
+            responseModalities: [Modality.TEXT],
+            // realtimeInputConfig: {
+            //   automaticActivityDetection: {
+            //     disabled: false,
+            //     silenceDurationMs: 5000,
+            //   }
+            // },
+          },
+          callbacks: {
+            onopen: () => {
+              console.log('Connected to the socket.');
             },
-            interimResults: true,
-          } as const;
+            onmessage: (e: LiveServerMessage) => {
+              console.log('Received message from the server: %s\n',
+                e
+              );
+            },
+            onerror: (e: ErrorEvent) => {
+              console.log('Error occurred: %s\n', e.error);
+            },
+            onclose: (e: CloseEvent) => {
+              console.log('Connection closed.');
+            },
+          },
+          });
+          console.log(`@@@@@@@@@@@@@@@@@@@@@@@@`, liveSession);
+          // liveSession.conn.send()
+          
+        
+        // const liveSession = await genaiClient.models.generateContentStream({
+        //   model: "gemini-2.0-flash-exp",
+        //   // config: {
+        //   //   // For transcription you probably want deterministic output (temperature 0)
+        //   //   temperature: 0.0,
+        //   //   maxOutputTokens: 2048,
+        //   //   // Other transcription-specific settings may be needed here.
+        //   // },
+        //   // stream: true,
+        // });
+        // socket.liveSession = liveSession;
+        console.log("Live session initialized for socket", socket.id);
 
-          // Create the streamingRecognize stream.
-          const recognizeStream = speechClient
-            .streamingRecognize(request)
-            .on("error", (error) => {
-              console.error("Speech-to-Text error:", error);
-            })
-            .on("data", (data) => {
-              const transcription = data.results?.[0]?.alternatives?.[0]?.transcript;
-              console.log("Transcription:", transcription);
-              if (transcription) {
-                socket.emit("transcription", transcription);
-              }
-            });
+        // Continuously iterate over the live session output and emit transcription results.
+        // (async () => {
+        //   try {
+        //     for await (const chunk of liveSession) {
+        //       // Each chunk is assumed to have a candidates array; 
+        //       // we extract any transcribed text from candidate[0].delta.content.
+        //       if (chunk.choices && chunk.choices[0]?.delta?.content) {
+        //         const text = chunk.choices[0].delta.content;
+        //         // Emit the text to the client as it arrives.
+        //         socket.emit("transcription", text);
+        //       }
+        //     }
+        //     console.log("Live session stream closed for socket", socket.id);
+        //   } catch (err) {
+        //     console.error("Error in live session stream:", err);
+        //   }
+        // })();
+      } catch (error) {
+        console.error("Error initializing live session:", error);
+        socket.disconnect();
+        return;
+      }
 
-          // Save the speech stream on the socket.
-          socket.speechStream = recognizeStream;
-        } catch (error) {
-          console.error("Error setting up Speech-to-Text:", error);
-          socket.disconnect();
-        }
-      })();
-
-      // When an audio chunk arrives, write it to the speech stream.
-      socket.on("audio-stream", (data: Buffer) => {
-        if (socket.speechStream) {
-          socket.speechStream.write(data);
+      // When an audio chunk is received from the client, write it to the live session.
+      socket.on("audio-stream", async (data: Buffer) => {
+        console.log("Received audio chunk from client", socket.id);
+        if (liveSession) {
+          try {
+            // Convert binary audio data into Base64.
+            const base64Data = data.toString("base64");
+            // const blob = new Blob([data], { type: "audio/webm" });
+            // await liveSession.sendClientContent({
+            //   turns: {
+            //     role: "user",
+            //     parts: [{
+                  
+            //     }],
+            //   },
+            // });
+            const content = await liveSession.sendRealtimeInput({ media: { data: base64Data } });
+            console.log("1111111111111111111111111:", content);
+            // Write this audio chunk into the live session.
+            // socket.liveSession.write({
+            //   audio: {
+            //     inlineData: {
+            //       data: base64Data,
+            //       mimeType: "audio/webm; codecs=opus", // Ensure this matches your recording format.
+            //     },
+            //   },
+            // });
+          } catch (err) {
+            console.error("Error writing audio chunk to live session:", err);
+          }
+        } else {
+          console.error("No live session available for socket", socket.id);
         }
       });
 
-      // When silence is detected, close the speech stream.
+      // When silence is detected, end the live transcription session.
       socket.on("silence", () => {
-        if (socket.speechStream) {
-          console.log("Silence event received, closing speech stream.");
-          socket.speechStream.end();
-          delete socket.speechStream;
+        console.log("Silence detected on socket", socket.id);
+        if (socket.liveSession) {
+          socket.liveSession.end();
+          delete socket.liveSession;
+          console.log("Live session ended due to silence for socket", socket.id);
         }
       });
 
-      // For an echo test.
+      // Optional echo test.
       socket.on("echo", (msg: string) => {
         console.log("Echo message received:", msg);
         socket.emit("echo-response", msg);
@@ -128,6 +181,5 @@ export default function handler(
 
     res.socket.server.io = io;
   }
-
   res.end();
 }

@@ -3,6 +3,7 @@ import { signIn, signOut, useSession } from "next-auth/react";
 import type { NextPage } from "next";
 import { useEffect, useRef, useState } from "react";
 import io from "socket.io-client";
+import axios from "axios";
 
 const Home: NextPage = () => {
   const { data: session } = useSession();
@@ -28,6 +29,16 @@ const Home: NextPage = () => {
       socketRef.current?.disconnect();
     };
   }, []);
+
+   const checkAccessToken = async () => {
+    // write axios post request to /api/test-token
+    const res = await axios.post('/api/test-token', {}, {
+      // headers: {
+      //   'Authorization': `Bearer ${session?.accessToken}`
+      // }
+    })
+    console.log('res', res)
+  };
 
   // Monitor audio level to detect silence.
   const monitorAudioLevel = () => {
@@ -70,10 +81,16 @@ const Home: NextPage = () => {
     audioChunksRef.current = [];
 
     // Establish a new Socket.IO connection with the proper path.
-    socketRef.current = io("", { path: "/api/socket/socket.io" });
+    socketRef.current = io("", {
+      path: "/api/socket/socket.io",
+      auth: {
+        // @ts-expect-error Property 'token' does not exist on type
+        token: session?.user?.token?.accessToken,
+      }    
+    });
 
     // Listen for echoed audio chunks.
-    socketRef.current.on("audio-response", (data: any) => {
+    socketRef.current.on("audio-response", (data: Buffer) => {
       // Convert the binary data into a Blob part.
       console.log("Echo response received");
       const blobChunk = new Blob([data], { type: "audio/webm; codecs=opus" });
@@ -164,6 +181,7 @@ const Home: NextPage = () => {
           )}
           {session.user?.email && <p>Email: {session.user.email}</p>}
           <button onClick={() => signOut()}>Sign out</button>
+          <button onClick={() => checkAccessToken()}>Check for access token</button>
           <button onClick={startRecording} disabled={isRecording}>
             Start Recording
           </button>

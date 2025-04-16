@@ -46,14 +46,15 @@ export const authOptions: NextAuthOptions = {
     },
     // In the session callback, we intentionally do not include the access token
     // so that it isn’t available on the client.
-    // async session({ session, token }) {
-    //   // Attach only non-sensitive data to the session (e.g. phoneNumber)
-    //   if (session.user) {
-    //     // session.user.phoneNumber = token.phoneNumber;
-    //     // Notice: we are not attaching token.accessToken here.
-    //   }
-    //   return session;
-    // },
+    async session({ session, token }) {
+      // Attach only non-sensitive data to the session (e.g. phoneNumber)
+      if (session.user) {
+        // @ts-expect-error Property 'token' does not exist on type 
+        session.user.token = token;
+        // Notice: we are not attaching token.accessToken here.
+      }
+      return session;
+    },
   },
 };
 
